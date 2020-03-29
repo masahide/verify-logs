@@ -5,9 +5,9 @@
 [![Docker Cloud Build Status](https://img.shields.io/docker/cloud/build/masahide/verify-logs)](https://hub.docker.com/repository/docker/masahide/verify-logs)[![Docker Cloud Automated build](https://img.shields.io/docker/cloud/automated/masahide/verify-logs)](https://hub.docker.com/r/masahide/verify-logs/builds)
 
 
-
 ## usage
 
 ```bash
-AWS_REGION=ap-northeast-1 LOGGROUPNAME=/aws/ecs/verify-logs masahide/verify-logs
+# use ~/.aws/config 
+docker -e AWS_PROFILE=profile-name -e AWS_SDK_LOAD_CONFIG=1 -e AWS_DEFAULT_REGION=ap-northeast-1 -v $HOME:/root masahide/verify-logs
 ```

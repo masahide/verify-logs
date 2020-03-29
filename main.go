@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -10,25 +9,36 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
+	"github.com/docker/docker/daemon/logger"
+	"github.com/docker/docker/daemon/logger/awslogs"
+	"github.com/google/uuid"
 	"github.com/kelseyhightower/envconfig"
 )
 
 type param struct {
-	LogGroupName   string        `default:"/aws/ecs/verify-logs"`
-	Pattern        string        `default:""`
-	DummySize      int           `default:"1000"`
-	DummyStringLen int           `default:"300"`
-	MaxLines       int           `default:"1000000"`
-	SetOfLines     int           `default:"2000"`
-	Wait           time.Duration `default:"5s"`
+	LogGroupName    string        `default:"test-verify-logs"`
+	Regeon          string        `envconfig:"AWS_REGION" default:"ap-northeast-1"`
+	LogStreamPrefix string        `default:"verify-logs"`
+	Pattern         string        `default:""`
+	DummyStringLen  int           `default:"30"`
+	MaxLines        int           `default:"1000"`
+	SetOfLines      int           `default:"5"`
+	Wait            time.Duration `default:"3s"`
 }
 
-func getDummyData(p param) []string {
-	s := make([]string, p.DummySize)
-	for i := 0; i < p.DummySize; i++ {
-		s[i] = strings.Repeat("a", p.DummyStringLen)
+func createLogGroup(svc cloudwatchlogsiface.CloudWatchLogsAPI, p param) {
+	_, err := svc.CreateLogGroup(&cloudwatchlogs.CreateLogGroupInput{LogGroupName: &p.LogGroupName})
+	if err != nil {
+		switch err.(type) {
+		case *cloudwatchlogs.ResourceAlreadyExistsException:
+			log.Printf("already %s", p.LogGroupName)
+			return
+		}
+		log.Fatal(err)
 	}
-	return s
+	log.Printf("wait...")
+	time.Sleep(5 * time.Second)
 }
 
 func notIn(ss []string, s string) bool {
@@ -40,12 +50,9 @@ func notIn(ss []string, s string) bool {
 	return true
 }
 
-func tail(result chan<- string, p param) {
-	sess, err := session.NewSession()
-	if err != nil {
-		log.Fatal(err)
-	}
-	svc := cloudwatchlogs.New(sess, aws.NewConfig())
+// tail reproduces the implementation of aws-cliv2 logs tail command.
+// see: https://github.com/aws/aws-cli/blob/v2/awscli/customizations/logs/tail.py#L298-L313
+func tail(svc cloudwatchlogsiface.CloudWatchLogsAPI, result chan<- string, p param) {
 	var nextToken *string
 	startTime := aws.Int64(time.Now().Unix() * 1000)
 	lastEventIDs := []string{}
@@ -78,27 +85,48 @@ func tail(result chan<- string, p param) {
 }
 
 type logData struct {
-	No   int    `json:"log_number"`
-	Data string `json:"data"`
+	Time time.Time `json:"time"`
+	No   int       `json:"log_number"`
+	Data string    `json:"data"`
 }
 
-func outputLogs(data []string, p param) {
+func newLogger(p param) logger.Logger {
+	info := logger.Info{Config: map[string]string{
+		"awslogs-group":         p.LogGroupName,
+		"awslogs-region":        p.Regeon,
+		"awslogs-stream-prefix": p.LogStreamPrefix,
+	},
+		ContainerID:   uuid.Must(uuid.NewRandom()).String(),
+		ContainerName: p.LogGroupName,
+	}
+	alog, err := awslogs.New(info)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return alog
+}
+
+// outputLogs  Log output to cloudwatchlogs using `docker awslogs driver`
+func outputLogs(p param) {
+	alog := newLogger(p)
 	for i := 0; i < p.MaxLines; i++ {
-		l := logData{No: i, Data: data[i%len(data)]}
+		l := logData{Time: time.Now(), No: i, Data: strings.Repeat("a", p.DummyStringLen)}
 		j, err := json.Marshal(l)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("%s\n", j)
+		alog.Log(&logger.Message{Line: j, Timestamp: time.Now()})
 		if i%p.SetOfLines == 0 {
+			alog.Close()
 			time.Sleep(p.Wait)
+			alog = newLogger(p)
 		}
 	}
 }
 
-func check(data []string, p param) {
+func check(svc cloudwatchlogsiface.CloudWatchLogsAPI, p param) {
 	res := make(chan string, p.SetOfLines*10)
-	go tail(res, p)
+	go tail(svc, res, p)
 	index := 0
 	for {
 		r := <-res
@@ -115,10 +143,12 @@ func check(data []string, p param) {
 			log.Printf("faild json.Unmarshal:%s", err)
 			continue
 		}
+		log.Printf("%s\n", r)
+
 		if data.No == index {
 			index++
 		} else {
-			log.Fatalf("err: index(%d) != data.No(%d), line:%s", index, data.No, r)
+			log.Printf("err: index(%d) != data.No(%d), line:%s", index, data.No, r)
 		}
 		if index >= p.MaxLines {
 			log.Printf("Everything is fine!")
@@ -133,7 +163,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	data := getDummyData(p)
-	go outputLogs(data, p)
-	check(data, p)
+	svc := cloudwatchlogs.New(session.Must(session.NewSession()), aws.NewConfig())
+	createLogGroup(svc, p)
+	go outputLogs(p)
+	check(svc, p)
 }
