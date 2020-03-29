@@ -1,9 +1,11 @@
 # verify-logs
 
-
-
 [![Docker Cloud Build Status](https://img.shields.io/docker/cloud/build/masahide/verify-logs)](https://hub.docker.com/repository/docker/masahide/verify-logs)[![Docker Cloud Automated build](https://img.shields.io/docker/cloud/automated/masahide/verify-logs)](https://hub.docker.com/r/masahide/verify-logs/builds)
 
+The `aws logs tail --follow` command using AWS CloudWatchLogs FilterLogEvents often caused missing log tracking. 
+[The python code](https://github.com/aws/aws-cli/blob/v2/awscli/customizations/logs/tail.py#L298-L313) itself looks fine. We implemented the same code in golang and verified the operation of the API.
+
+As a result, the occurrence of the same problem was confirmed.
 
 ## Usage
 
